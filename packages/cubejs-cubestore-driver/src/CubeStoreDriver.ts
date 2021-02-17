@@ -1,16 +1,22 @@
-const mysql = require('mysql');
-const genericPool = require('generic-pool');
-const { promisify } = require('util');
-const { BaseDriver } = require('@cubejs-backend/query-orchestrator');
-const CubeStoreQuery = require('./CubeStoreQuery');
+import { BaseDriver } from '@cubejs-backend/query-orchestrator';
+import genericPool, { Pool } from 'generic-pool';
+import { promisify } from 'util';
 
-const GenericTypeToCubeStore = {
+import { CubeStoreQuery } from './CubeStoreQuery';
+import { AsyncConnection, createConnection } from './connection';
+import { ConnectionConfig } from './types';
+
+const GenericTypeToCubeStore: Record<string, string> = {
   string: 'varchar(255)',
   text: 'varchar(255)'
 };
 
-class CubeStoreDriver extends BaseDriver {
-  constructor(config) {
+export class CubeStoreDriver extends BaseDriver {
+  protected readonly config: any;
+
+  protected readonly pool: Pool<AsyncConnection>;
+
+  public constructor(config: Partial<ConnectionConfig>) {
     super();
     const { pool, ...restConfig } = config || {};
 
@@ -24,22 +30,8 @@ class CubeStoreDriver extends BaseDriver {
       timezone: 'Z',
       ...restConfig,
     };
-    this.pool = genericPool.createPool({
-      create: async () => {
-        const conn = mysql.createConnection(this.config);
-        const connect = promisify(conn.connect.bind(conn));
-
-        if (conn.on) {
-          conn.on('error', () => {
-            conn.destroy();
-          });
-        }
-        conn.execute = promisify(conn.query.bind(conn));
-
-        await connect();
-
-        return conn;
-      },
+    this.pool = genericPool.createPool<AsyncConnection>({
+      create: async () => createConnection(this.config),
       destroy: (connection) => promisify(connection.end.bind(connection))(),
       validate: async (connection) => {
         try {
@@ -61,7 +53,7 @@ class CubeStoreDriver extends BaseDriver {
     });
   }
 
-  withConnection(fn) {
+  public withConnection(fn: (connection: AsyncConnection) => Promise<unknown>) {
     const self = this;
     const connectionPromise = this.pool.acquire();
 
@@ -93,7 +85,7 @@ class CubeStoreDriver extends BaseDriver {
     return promise;
   }
 
-  async testConnection() {
+  public async testConnection() {
     // eslint-disable-next-line no-underscore-dangle
     const conn = await this.pool._factory.create();
     try {
@@ -104,29 +96,28 @@ class CubeStoreDriver extends BaseDriver {
     }
   }
 
-  query(query, values) {
-    return this.withConnection(db => db.execute(query, values)
-      .then(res => res));
+  public async query(query, values) {
+    return this.withConnection(db => db.execute(query, values));
   }
 
-  async release() {
+  public async release() {
     await this.pool.drain();
     await this.pool.clear();
   }
 
-  informationSchemaQuery() {
+  public informationSchemaQuery() {
     return `${super.informationSchemaQuery()} AND columns.table_schema = '${this.config.database}'`;
   }
 
-  quoteIdentifier(identifier) {
+  public quoteIdentifier(identifier: string): string {
     return `\`${identifier}\``;
   }
 
-  fromGenericType(columnType) {
+  public fromGenericType(columnType: string): string {
     return GenericTypeToCubeStore[columnType] || super.fromGenericType(columnType);
   }
 
-  toColumnValue(value, genericType) {
+  public toColumnValue(value: any, genericType: any) {
     if (genericType === 'timestamp' && typeof value === 'string') {
       return value && value.replace('Z', '');
     }
@@ -141,14 +132,14 @@ class CubeStoreDriver extends BaseDriver {
     return super.toColumnValue(value, genericType);
   }
 
-  async uploadTableWithIndexes(table, columns, tableData, indexesSql) {
+  public async uploadTableWithIndexes(table: any, columns: any, tableData: any, indexesSql: any) {
     if (tableData.csvFile) {
       const files = Array.isArray(tableData.csvFile) ? tableData.csvFile : [tableData.csvFile];
       const createTableSql = this.createTableSql(table, columns);
       const indexes =
-        indexesSql.map(s => s.sql[0].replace(/^CREATE INDEX (.*?) ON (.*?) \((.*)$/, 'INDEX $1 ($3')).join(' ');
+        indexesSql.map((s: any) => s.sql[0].replace(/^CREATE INDEX (.*?) ON (.*?) \((.*)$/, 'INDEX $1 ($3')).join(' ');
       // eslint-disable-next-line no-unused-vars
-      const createTableSqlWithLocation = `${createTableSql} ${indexes} LOCATION ${files.map(f => '?').join(', ')}`;
+      const createTableSqlWithLocation = `${createTableSql} ${indexes} LOCATION ${files.map((f: any) => '?').join(', ')}`;
       await this.query(createTableSqlWithLocation, files).catch(e => {
         e.message = `Error during create table: ${createTableSqlWithLocation}: ${e.message}`;
         throw e;
@@ -187,15 +178,13 @@ class CubeStoreDriver extends BaseDriver {
     }
   }
 
-  static dialectClass() {
+  public static dialectClass() {
     return CubeStoreQuery;
   }
 
-  capabilities() {
+  public capabilities() {
     return {
       csvImport: true
     };
   }
 }
-
-module.exports = CubeStoreDriver;
